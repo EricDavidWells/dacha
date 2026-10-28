@@ -229,31 +229,38 @@ impl CameraResolver {
             let iface_name = first_unconfigured_iface
                 .ok_or_else(|| err_msg("Could not find any unconfigured interface"))?;
 
-            {
-                let show_output = command_args!(
-                    "nmcli -t -f NAME,device connection show"
-                ).output()?;
+            // NOTE: The DEVICE column is only populated for active connections.
+            for (name, dev) in Self::list_nm_connections("NAME,DEVICE")? {
+                if dev == iface_name {
+                    return Err(format_err!("Interface '{}' is already configured under connection '{}'. Waiting to get an IP...", iface_name, name));
+                }
+            }
 
-                if !show_output.status.success() {
-                    return Err(err_msg("Failed to contact NetworkManager"));
+            // Re-use a previously created (but currently inactive) profile rather than adding a duplicate.
+            let existing_uuid = Self::list_nm_connections("NAME,UUID")?
+                .into_iter()
+                .find(|(name, _)| name == "mocap")
+                .map(|(_, uuid)| uuid);
+
+            if let Some(uuid) = existing_uuid {
+                println!("Activating existing 'mocap' connection on iface {}...", iface_name);
+
+                // The profile may have been created for a different adapter.
+                let status = command_args!(
+                    "nmcli connection modify uuid {&uuid} connection.interface-name {&iface_name}"
+                ).status()?;
+                if !status.success() {
+                    return Err(format_err!("Failed to update the 'mocap' connection for {}", iface_name));
                 }
 
-                let s = std::str::from_utf8(&show_output.stdout)?;
-
-                for line in s.lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-
-                    let (name, dev) = line.split_once(":")
-                        .ok_or_else(|| err_msg("Invalid NetworkManager output"))?;
-                    
-                    if dev == iface_name {
-                        return Err(format_err!("Interface '{}' is already configured under connection '{}'. Waiting to get an IP...", iface_name, name));
-                    }
+                let status = command_args!(
+                    "nmcli connection up uuid {&uuid} ifname {&iface_name}"
+                ).status()?;
+                if !status.success() {
+                    return Err(format_err!("Failed to activate the 'mocap' connection on {}", iface_name));
                 }
 
+                return Err(format_err!("Activated 'mocap' on '{}'. Waiting for connection...", iface_name));
             }
 
             println!("Newly configuring iface {} for link local addressing...", iface_name);
@@ -276,6 +283,36 @@ impl CameraResolver {
         }
 
         Err(err_msg("Failed to find an appropriate ethernet interface"))
+    }
+
+    /// Lists NetworkManager connection profiles as (first field, second field) pairs.
+    /// The second field must not contain ':' as only the first field may be escaped.
+    #[cfg(target_os = "linux")]
+    fn list_nm_connections(fields: &str) -> Result<Vec<(String, String)>> {
+        let output = command_args!(
+            "nmcli -t -f {fields} connection show"
+        ).output()?;
+
+        if !output.status.success() {
+            return Err(err_msg("Failed to contact NetworkManager"));
+        }
+
+        let s = std::str::from_utf8(&output.stdout)?;
+
+        let mut out = vec![];
+        for line in s.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let (a, b) = line.rsplit_once(":")
+                .ok_or_else(|| err_msg("Invalid NetworkManager output"))?;
+
+            out.push((a.replace("\\:", ":"), b.to_string()));
+        }
+
+        Ok(out)
     }
 }
 
