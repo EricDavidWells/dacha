@@ -57,6 +57,9 @@ impl MocapApp {
             data_dir.clone(),
         ).await?);
 
+        let file_dialogs = Arc::new(WebViewFileDialogs::default());
+        manager.set_file_dialogs(file_dialogs.clone()).await?;
+
         let side_channel = Arc::new(DataSideChannel::create());
         manager.set_side_channel(side_channel.clone()).await?;
 
@@ -78,7 +81,10 @@ impl MocapApp {
             .load_url(&format!("http://127.0.0.1:{}", http_port))
             .with_icon(Self::load_icon().await?)
             .with_prefer_dark_theme(true)
-            .with_user_data_dir(data_dir.join("webview").to_str().unwrap());
+            .with_user_data_dir(data_dir.join("webview").to_str().unwrap())
+            .on_init(move |handle| {
+                let _ = file_dialogs.handle.apply(|v| *v = Some(handle));
+            });
 
         if args.enable_devtools {
             builder = builder
@@ -100,5 +106,30 @@ impl MocapApp {
             height: image.height() as u32,
             rgba: image.array.data
         })
+    }
+}
+
+/// Exposes the webview's native file pickers to the manager.
+#[derive(Default)]
+struct WebViewFileDialogs {
+    // Set once the webview window has been created.
+    handle: SyncMutex<Option<WebViewHandle>>,
+}
+
+impl WebViewFileDialogs {
+    fn get_handle(&self) -> Result<WebViewHandle> {
+        self.handle.apply(|v| v.clone())
+            .map_err(|_| err_msg("Webview handle lock poisoned"))?
+            .ok_or_else(|| err_msg("Webview not initialized yet"))
+    }
+}
+
+impl FileDialogs for WebViewFileDialogs {
+    fn open_file(&self, title: &str) -> Result<Option<String>> {
+        self.get_handle()?.open_file_dialog(title)
+    }
+
+    fn save_file(&self, title: &str, default_name: &str) -> Result<Option<String>> {
+        self.get_handle()?.save_file_dialog(title, Some(default_name))
     }
 }

@@ -12,7 +12,15 @@ import { camera_orientation } from "../../camera/js/orientation";
 import { entity_id_to_string } from "./utils";
 import { PropertiesTable } from "pkg/cnc/monitor/js/properties_table";
 import { DARK_MODE } from "pkg/web/lib/dark";
+import { Setting } from "pkg/web/lib/settings";
 import { FrameViewer } from "./frame_viewer";
+
+// Percentage scale applied to the width of each camera tile in the grid.
+const TILE_SCALE = new Setting('cameras.tile_scale', 100);
+
+// Portrait (sideways) camera tiles are shrunk by this much so that they are the
+// same height as landscape tiles. Equal to (1200 / 1920)^2 for our sensors.
+const PORTRAIT_TILE_SCALE = Math.pow(1200 / 1920, 2);
 
 export interface CamerasPageProps {
     context: PageContext,
@@ -183,7 +191,7 @@ export class CamerasPage extends React.Component<CamerasPageProps, CamerasPageSt
 
         let angle = '';
         if (camera.camera_status) {
-            let o = camera_orientation(camera.camera_status);
+            let o = camera_orientation(camera.camera_status, camera.id);
             angle = <span>{o.horizon_angle}&deg;</span>;
         }
 
@@ -357,6 +365,15 @@ export class CamerasPage extends React.Component<CamerasPageProps, CamerasPageSt
                         {render_checkbox('Grayscale', 'show_grayscale', true)}
                         {render_checkbox('Fullscreen', 'show_fullscreen', true)}
                         {render_checkbox('Aim', 'show_crosshair', true)}
+
+                        <div style={{ display: 'inline-block', padding: '5px 10px' }}>
+                            Size <input type="range" min={25} max={175} step={5} value={TILE_SCALE.get()}
+                                style={{ verticalAlign: 'middle', width: 100 }}
+                                onChange={(e) => {
+                                    TILE_SCALE.set(e.target.value * 1);
+                                    this.forceUpdate();
+                                }} />
+                        </div>
                     </div>
                 </div>
 
@@ -392,23 +409,16 @@ export class CamerasPage extends React.Component<CamerasPageProps, CamerasPageSt
                             });
                         }
 
-                        let upside_down = false;
-                        let angle = 0;
-
-                        let flip_x = false;
-                        let flip_y = false;
-
+                        let rotation = 0;
                         if (camera.camera_status) {
-                            let o = camera_orientation(camera.camera_status);
-                            upside_down = o.upside_down;
-                            angle = o.horizon_angle;
-
-                            if (o.upside_down) {
-                                flip_y = true;
-                            } else {
-                                flip_x = true;
-                            }
+                            rotation = camera_orientation(camera.camera_status, camera.id).rotation;
                         }
+
+                        let tile_width = (num_enabled < 5 ? 50 : 33.333) * (TILE_SCALE.get() / 100);
+                        if (rotation == 90 || rotation == 270) {
+                            tile_width *= PORTRAIT_TILE_SCALE;
+                        }
+                        tile_width = Math.min(tile_width, 100);
 
                         let points = [];
                         if (blobs && this.state.show_blobs) {
@@ -427,8 +437,9 @@ export class CamerasPage extends React.Component<CamerasPageProps, CamerasPageSt
                                 style={{
                                     opacity: (blobs !== null ? 1 : 0.5),
                                     cursor: 'pointer',
-                                    width: (active && this.state.show_fullscreen ? '100%' : (num_enabled < 5 ? '50%' : '33.333%')),
+                                    width: (active && this.state.show_fullscreen ? '100%' : `${tile_width}%`),
                                     display: (!active && active_camera && this.state.show_fullscreen ? 'none' : 'inline-block'),
+                                    verticalAlign: 'top',
                                     padding: 5,
                                     fontFamily: "Noto Sans Mono"
                                 }}
@@ -446,7 +457,7 @@ export class CamerasPage extends React.Component<CamerasPageProps, CamerasPageSt
                                     overflow: 'hidden',
                                     boxShadow: (active ? '0px 0px 10px #08f' : '')
                                 }}>
-                                    <FrameViewer image_source={image_source} points={points} flipX={flip_x} flipY={flip_y} controls_enabled={active} show_crosshair={this.state.show_crosshair} channel={this.props.context.channel} />
+                                    <FrameViewer image_source={image_source} points={points} rotation={rotation} controls_enabled={active} show_crosshair={this.state.show_crosshair} channel={this.props.context.channel} />
                                 </div>
                             </div>
                         );
@@ -952,6 +963,21 @@ export class CamerasPage extends React.Component<CamerasPageProps, CamerasPageSt
                             <Card header="Controls (all cameras)" style={{ marginBottom: 10 }}>
                                 <CardBody>
                                     {this._render_controls()}
+
+                                    <div style={{ marginTop: 10 }}>
+                                        <Button preset="outline-primary" onClick={(done) => {
+                                            this._execute({ save_camera_settings: true }, done)
+                                        }}>
+                                            Save Settings...
+                                        </Button>
+                                        <Button style={{ marginLeft: 10 }} preset="outline-primary" onClick={(done) => {
+                                            // Drop any unsent edits so the loaded values are displayed.
+                                            this.setState({ pending_config: null });
+                                            this._execute({ load_camera_settings: true }, done)
+                                        }}>
+                                            Load Settings...
+                                        </Button>
+                                    </div>
                                 </CardBody>
                             </Card>
 

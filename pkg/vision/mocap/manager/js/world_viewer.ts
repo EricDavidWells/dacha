@@ -7,6 +7,12 @@ const MAX_FPS = 30;
 
 const RAY_THICKNESS = 1; // 4 if you want it to be really visible.
 
+// How far (in meters) to draw the rays for each camera's 2d blobs.
+const BLOB_RAY_LENGTH = 6;
+
+// Colors used to tell apart the 2d blob rays of different cameras.
+const BLOB_RAY_COLORS = [0xFF3B30, 0x007AFF, 0xFFCC00, 0xAF52DE, 0x34C759, 0xFF9500, 0x5AC8FA, 0xFF2D55];
+
 
 function generateRigidBodyTriangulation(points) {
     const indices = [];
@@ -142,6 +148,29 @@ function createTextSprite(text, color) {
     return sprite;
 }
 
+// Converts a raw pixel location to normalized (undistorted) camera coordinates.
+// This mirrors CameraIntrinsicsModel::unproject_point in pkg/vision/src/camera.rs.
+function unproject_point(intrinsics, x: number, y: number): [number, number] {
+    const [fx, fy] = intrinsics.focal_length;
+    const [cx, cy] = intrinsics.center;
+    const k1 = intrinsics.k1 || 0;
+    const k2 = intrinsics.k2 || 0;
+
+    const px = (x - cx) / fx;
+    const py = (y - cy) / fy;
+
+    let u = px;
+    let v = py;
+    for (let i = 0; i < 5; i++) {
+        const r2 = u * u + v * v;
+        const distortion = 1 + k1 * r2 + k2 * r2 * r2;
+        u = px / distortion;
+        v = py / distortion;
+    }
+
+    return [u, v];
+}
+
 export class MocapWorldViewer {
     constructor(container, selectionBox) {
         this._container = container;
@@ -214,6 +243,8 @@ export class MocapWorldViewer {
         this._skeleton_groups = new Map(); // id -> THREE.Group
         this._link_lines = []; // Array of THREE.Line
         this._camera_rays = []; // Array of THREE.Line
+        this._blob_rays = null; // THREE.LineSegments
+        this._blobRaysVisible = false;
         this._camerasVisible = true;
         this._rigidBodiesVisible = false;
         this._rigidBodyAxesVisible = false;
@@ -230,6 +261,7 @@ export class MocapWorldViewer {
         this._camera_material = new THREE.LineBasicMaterial({ color: 0x34C759 });
         this._selected_camera_material = new THREE.LineBasicMaterial({ color: 0xFF9500 });
         this._link_material = new THREE.LineBasicMaterial({ color: 0x8E8E93 });
+        this._blob_ray_material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6 });
         this._ray_material = new THREE.LineDashedMaterial({ color: 0xFF3B30, dashSize: 0.1, gapSize: 0.1, linewidth: RAY_THICKNESS });
 
         this._rigid_body_material = new THREE.MeshBasicMaterial({ color: 0xff00ff, depthTest: false }); // Magenta sphere
@@ -340,6 +372,72 @@ export class MocapWorldViewer {
 
     setLabelsVisible(visible) {
         this._labels.forEach(label => label.visible = visible);
+    }
+
+    setBlobRaysVisible(visible) {
+        this._blobRaysVisible = visible;
+        if (this._blob_rays) {
+            this._blob_rays.visible = visible;
+        }
+    }
+
+    // Draws a ray out of each camera for every 2d blob it currently sees.
+    // 'blobs' is a ReadBlobsResponse from the mocap.Manager (or null to clear).
+    updateBlobRays(blobs) {
+        if (this._blob_rays) {
+            this._scene.remove(this._blob_rays);
+            this._blob_rays.geometry.dispose();
+            this._blob_rays = null;
+        }
+
+        if (!blobs) {
+            return;
+        }
+
+        const positions = [];
+        const colors = [];
+
+        let camera_index = 0;
+        for (const cam of this._cameras_data.values()) {
+            const color = new THREE.Color(BLOB_RAY_COLORS[camera_index % BLOB_RAY_COLORS.length]);
+            camera_index++;
+
+            if (!cam.intrinsics) {
+                continue;
+            }
+
+            let cam_blobs = null;
+            (blobs.cameras || []).forEach((c) => {
+                if (c.camera_id == cam.id) {
+                    cam_blobs = c.results.blobs || [];
+                }
+            });
+
+            if (!cam_blobs) {
+                continue;
+            }
+
+            const { position, qC2W } = this._camera_pose(cam);
+
+            cam_blobs.forEach((blob) => {
+                const [u, v] = unproject_point(cam.intrinsics, blob.x, blob.y);
+                const end = new THREE.Vector3(u, v, 1).normalize()
+                    .applyQuaternion(qC2W)
+                    .multiplyScalar(BLOB_RAY_LENGTH)
+                    .add(position);
+
+                positions.push(position.x, position.y, position.z, end.x, end.y, end.z);
+                colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+            });
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+        this._blob_rays = new THREE.LineSegments(geometry, this._blob_ray_material);
+        this._blob_rays.visible = this._blobRaysVisible;
+        this._scene.add(this._blob_rays);
     }
 
     setCamerasVisible(visible) {
@@ -804,9 +902,8 @@ export class MocapWorldViewer {
         this._update_camera_object(cam);
     }
 
-    _update_camera_object(cam) {
-        const group = this._camera_groups.get(cam.id);
-
+    // Gets the world position and camera-to-world rotation of a camera from its extrinsics.
+    _camera_pose(cam) {
         // rotation is World-to-Camera in axis-angle format [rx, ry, rz]
         const r = cam.rotation;
         const rx = r[0], ry = r[1], rz = r[2];
@@ -825,7 +922,15 @@ export class MocapWorldViewer {
         // Camera-to-World position is -R_c2w * t_w2c
         const tW2C = new THREE.Vector3(...cam.translation);
         const tC2W = tW2C.clone().applyQuaternion(qC2W).negate();
-        group.position.copy(tC2W);
+
+        return { position: tC2W, qC2W };
+    }
+
+    _update_camera_object(cam) {
+        const group = this._camera_groups.get(cam.id);
+
+        const { position, qC2W } = this._camera_pose(cam);
+        group.position.copy(position);
 
         // Convert from OpenCV (Z forward, Y down) to Three.js (Z backward, Y up)
         // Negating the Y and Z axes is mathematically equivalent to applying a 

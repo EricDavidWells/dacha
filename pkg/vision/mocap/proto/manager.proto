@@ -301,6 +301,14 @@ message ExecuteRequest {
         bool stop_aux_rpc_server = 23;
 
         SaveFactoryIntrinsicsCommand save_factory_intrinsics = 24;
+
+        // Prompts the user (via a native file dialog) for where to save the current
+        // UI adjustable camera settings (frame rate, exposure, etc.).
+        bool save_camera_settings = 25;
+
+        // Prompts the user for a settings file previously written by save_camera_settings
+        // and applies it to all cameras.
+        bool load_camera_settings = 26;
     }
 }
 

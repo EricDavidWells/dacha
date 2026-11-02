@@ -13,6 +13,7 @@ import { SpinnerInline } from "pkg/web/lib/spinner";
 import React from "react";
 import { CameraLiveFrameSource } from "./live";
 import { Channel } from "pkg/web/lib/rpc";
+import { orientation_transform } from "../../camera/js/orientation";
 
 interface Point {
     x: number;
@@ -25,8 +26,8 @@ interface Point {
 interface FrameViewerProps {
     image_source?: ImageSource;
     controls_enabled: boolean;
-    flipX: boolean;
-    flipY: boolean;
+    // Clockwise display rotation from camera_orientation().
+    rotation: number;
     points: Point[];
     show_crosshair?: boolean;
     channel?: Channel
@@ -215,18 +216,18 @@ export class FrameViewer extends React.Component<FrameViewerProps> {
 
     render() {
 
-        const { flipX = false, flipY = false, controls_enabled = true, points = [], show_crosshair = false } = this.props;
+        const { rotation = 0, controls_enabled = true, points = [], show_crosshair = false } = this.props;
         const { transform, is_loading, img_src, is_dragging } = this.state;
 
         const cursor_style = !controls_enabled ? null : is_dragging ? 'grabbing' : 'grab';
-        const sx = flipX ? -1 : 1;
-        const sy = flipY ? -1 : 1;
 
         // TODO: Make this more dynamic.
         let frame_width = 1920;
         let frame_height = 1200;
 
-        let aspect_ratio = `${frame_width} / ${frame_height}`;
+        let display = orientation_transform(rotation, frame_width, frame_height);
+
+        let aspect_ratio = `${display.width} / ${display.height}`;
 
         return (
             <div className="frame-container"
@@ -251,62 +252,62 @@ export class FrameViewer extends React.Component<FrameViewerProps> {
                 }}>
                     <div style={{
                         position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
-                        transformOrigin: 'center center',
-                        transform: `scale(${sx}, ${sy})`,
                     }}>
-                        <svg viewBox="0 0 1920 1200" preserveAspectRatio="none" style={{
+                        <svg viewBox={`0 0 ${display.width} ${display.height}`} preserveAspectRatio="none" style={{
                             width: '100%', height: '100%', top: 0, left: 0, position: 'absolute',
                             pointerEvents: 'none'
                         }}>
-                            {img_src ? (
-                                <image
-                                    href={img_src}
-                                    width={frame_width}
-                                    height={frame_height}
-                                    preserveAspectRatio="none"
-                                    style={{
-                                        opacity: is_loading ? 0.5 : 1.0,
-                                        // Pixelation is slow in Chrome due to bad GPU acceleation so only do it when zoomed in.
-                                        imageRendering: transform.scale > 2 ? "pixelated" : undefined,
-                                    }}
-                                    onLoad={this.handle_img_load}
-                                    onAbort={this.handle_img_error}
-                                    onError={this.handle_img_error}
-                                />
-                            ) : (
-                                /* black background if no image is given */
-                                <rect width={frame_width} height={frame_height} fill="#000" />
-                            )}
+                            <g transform={`matrix(${display.matrix.join(' ')})`}>
+                                {img_src ? (
+                                    <image
+                                        href={img_src}
+                                        width={frame_width}
+                                        height={frame_height}
+                                        preserveAspectRatio="none"
+                                        style={{
+                                            opacity: is_loading ? 0.5 : 1.0,
+                                            // Pixelation is slow in Chrome due to bad GPU acceleation so only do it when zoomed in.
+                                            imageRendering: transform.scale > 2 ? "pixelated" : undefined,
+                                        }}
+                                        onLoad={this.handle_img_load}
+                                        onAbort={this.handle_img_error}
+                                        onError={this.handle_img_error}
+                                    />
+                                ) : (
+                                    /* black background if no image is given */
+                                    <rect width={frame_width} height={frame_height} fill="#000" />
+                                )}
 
-                            {points.map((p, i) => (
-                                <ellipse
-                                    key={i}
-                                    cx={p.x}
-                                    cy={p.y}
-                                    rx={p.radius_a}
-                                    ry={p.radius_b}
-                                    transform={`rotate(${(p.angle || 0) * (180 / Math.PI)}, ${p.x}, ${p.y})`}
-                                    fill={img_src ? "rgba(239, 68, 68, 0.6)" : '#fff'}
-                                    stroke="#ff0000"
-                                    strokeWidth={img_src ? 1 / transform.scale : 0}
-                                />
-                            ))}
-                            {img_src ? points.map((p, i) => (
-                                <circle
-                                    key={i}
-                                    cx={p.x}
-                                    cy={p.y}
-                                    r={1}
-                                    fill="#0bf"
-                                />
-                            )) : null}
+                                {points.map((p, i) => (
+                                    <ellipse
+                                        key={i}
+                                        cx={p.x}
+                                        cy={p.y}
+                                        rx={p.radius_a}
+                                        ry={p.radius_b}
+                                        transform={`rotate(${(p.angle || 0) * (180 / Math.PI)}, ${p.x}, ${p.y})`}
+                                        fill={img_src ? "rgba(239, 68, 68, 0.6)" : '#fff'}
+                                        stroke="#ff0000"
+                                        strokeWidth={img_src ? 1 / transform.scale : 0}
+                                    />
+                                ))}
+                                {img_src ? points.map((p, i) => (
+                                    <circle
+                                        key={i}
+                                        cx={p.x}
+                                        cy={p.y}
+                                        r={1}
+                                        fill="#0bf"
+                                    />
+                                )) : null}
 
-                            {show_crosshair && (
-                                <g stroke="rgba(255, 255, 255, 0.8)" strokeWidth={1 / transform.scale}>
-                                    <line x1={0} y1={frame_height / 2} x2={frame_width} y2={frame_height / 2} />
-                                    <line x1={frame_width / 2} y1={0} x2={frame_width / 2} y2={frame_height} />
+                                {show_crosshair && (
+                                    <g stroke="rgba(255, 255, 255, 0.8)" strokeWidth={1 / transform.scale}>
+                                        <line x1={0} y1={frame_height / 2} x2={frame_width} y2={frame_height / 2} />
+                                        <line x1={frame_width / 2} y1={0} x2={frame_width / 2} y2={frame_height} />
                                 </g>
                             )}
+                            </g>
                         </svg>
                     </div>
                 </div>

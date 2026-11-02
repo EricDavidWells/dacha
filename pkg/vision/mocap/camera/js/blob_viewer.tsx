@@ -1,7 +1,8 @@
 import React from "react";
+import { orientation_transform, apply_orientation_transform } from "./orientation";
 
 
-export class Blob2dViewer extends React.Component<{ status: any, results: any, upsideDown: boolean }> {
+export class Blob2dViewer extends React.Component<{ status: any, results: any, rotation: number }> {
 
     _canvas: React.RefObject<HTMLCanvasElement> = React.createRef();
 
@@ -27,11 +28,13 @@ export class Blob2dViewer extends React.Component<{ status: any, results: any, u
 
         let status = this.props.status;
 
+        let display = orientation_transform(this.props.rotation || 0, status.sensor.frame_width, status.sensor.frame_height);
+
         let rect = container.getBoundingClientRect();
         let canvas_width = Math.ceil(rect.width);
-        let canvas_height = Math.round((status.sensor.frame_height / status.sensor.frame_width) * canvas_width);
+        let canvas_height = Math.round((display.height / display.width) * canvas_width);
 
-        if (canvas_width != this.state.canvas_width) {
+        if (canvas_width != this.state.canvas_width || canvas_height != this.state.canvas_height) {
             this.setState({
                 canvas_height,
                 canvas_width
@@ -53,18 +56,12 @@ export class Blob2dViewer extends React.Component<{ status: any, results: any, u
 
         let blobs = this.props.results.results.blobs || [];
 
-        let scale = canvas_width / status.sensor.frame_width;
+        let scale = canvas_width / display.width;
 
         blobs.map((blob) => {
 
             // Note that we draw it from the user perspective looking at the camera from in front of it.
-            let x = blob.x;
-            let y = blob.y;
-            if (this.props.upsideDown) {
-                y = status.sensor.frame_height - y;
-            } else {
-                x = status.sensor.frame_width - x;
-            }
+            let [x, y] = apply_orientation_transform(display.matrix, blob.x, blob.y);
 
             ctx.fillStyle = '#fff';
             ctx.beginPath();

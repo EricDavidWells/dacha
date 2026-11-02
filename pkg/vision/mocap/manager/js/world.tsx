@@ -13,6 +13,8 @@ import { DARK_MODE } from "pkg/web/lib/dark";
 
 // TODO: Continously fetch the manager status across all pages.
 
+const SHOW_BLOB_RAYS = new Setting('world.show_blob_rays', false);
+
 export interface WorldPageProps {
     context: PageContext,
 }
@@ -32,6 +34,11 @@ const CONTROLS = [
         name: 'Show Cameras',
         setting: new Setting('world.show_cameras', true),
         viewer_fn: (viewer: MocapWorldViewer, value: boolean) => viewer.setCamerasVisible(value)
+    },
+    {
+        name: 'Show 2D Rays',
+        setting: SHOW_BLOB_RAYS,
+        viewer_fn: (viewer: MocapWorldViewer, value: boolean) => viewer.setBlobRaysVisible(value)
     },
     {
         name: 'Show Axis Labels',
@@ -77,6 +84,9 @@ export class WorldPage extends React.Component<WorldPageProps, WorldPageState> {
     _canvas_container: React.RefObject<HTMLDivElement> = React.createRef();
     _selection_box: React.RefObject<HTMLDivElement> = React.createRef();
 
+    // Set while we are streaming 2d blobs for drawing rays.
+    _blobs_abort: AbortController | null = null;
+
     constructor(props: WorldPageProps) {
         super(props);
     }
@@ -97,6 +107,11 @@ export class WorldPage extends React.Component<WorldPageProps, WorldPageState> {
     }
 
     componentWillUnmount(): void {
+        if (this._blobs_abort) {
+            this._blobs_abort.abort();
+            this._blobs_abort = null;
+        }
+
         this._viewer.stop();
     }
 
@@ -159,6 +174,33 @@ export class WorldPage extends React.Component<WorldPageProps, WorldPageState> {
         }
     }
 
+    // Only pull 2d blobs from the manager while the rays are being displayed.
+    _update_blobs_stream() {
+        if (SHOW_BLOB_RAYS.get() && !this._blobs_abort) {
+            this._blobs_abort = new AbortController();
+            this._read_blobs(this._blobs_abort.signal);
+        } else if (!SHOW_BLOB_RAYS.get() && this._blobs_abort) {
+            this._blobs_abort.abort();
+            this._blobs_abort = null;
+            this._viewer.updateBlobRays(null);
+        }
+    }
+
+    _read_blobs = async (abort_signal: AbortSignal) => {
+        let res = this.props.context.channel.call_streaming('mocap.Manager', 'ReadBlobs', {
+            max_rate: 15
+        }, { abort_signal });
+
+        while (true) {
+            let msg = await res.recv();
+            if (!msg || abort_signal.aborted) {
+                return;
+            }
+
+            this._viewer.updateBlobRays(msg);
+        }
+    }
+
     _update_viewer() {
 
         if (!this.state.status || !this.state.points) {
@@ -190,6 +232,7 @@ export class WorldPage extends React.Component<WorldPageProps, WorldPageState> {
                 id: cam.id,
                 translation: config.extrinsics.translation,
                 rotation: config.extrinsics.rotation,
+                intrinsics: config.intrinsics,
             });
         });
 
@@ -252,6 +295,8 @@ export class WorldPage extends React.Component<WorldPageProps, WorldPageState> {
         CONTROLS.map((c) => {
             c.viewer_fn(this._viewer, c.setting.get());
         });
+
+        this._update_blobs_stream();
     }
 
     _define_rigid_body = async (done) => {

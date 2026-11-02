@@ -21,6 +21,7 @@ mod rigid_body;
 mod rigid_transform;
 mod origin;
 pub mod side_channel;
+pub mod file_dialog;
 pub mod skeleton;
 mod recording;
 
@@ -28,4 +29,5 @@ pub use inst::*;
 pub use wand::*;
 pub use proto_utils::*;
 pub use config::*;
+pub use file_dialog::FileDialogs;
 pub use rigid_body::*;

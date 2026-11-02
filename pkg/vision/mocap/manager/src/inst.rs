@@ -40,6 +40,7 @@ use crate::skeleton::{SkeletonTracker, standard_skeleton};
 use crate::networking::*;
 use crate::aux_rpc_server::*;
 use crate::side_channel::*;
+use crate::file_dialog::*;
 
 const CONFIG_PATCH_FILE: &'static str = "config.pb";
 
@@ -130,6 +131,8 @@ struct State {
     time_server_addr: String,
 
     side_channel: Option<Arc<DataSideChannel>>,
+
+    file_dialogs: Option<Arc<dyn FileDialogs>>,
 }
 
 struct CameraConfigState {
@@ -328,6 +331,13 @@ impl MocapManager {
         });
         Ok(())
     }
+
+    pub async fn set_file_dialogs(&self, file_dialogs: Arc<dyn FileDialogs>) -> Result<()> {
+        lock!(state <= self.shared.state.lock().await?, {
+            state.file_dialogs = Some(file_dialogs);
+        });
+        Ok(())
+    }
 }
 
 impl MocapManagerInner {
@@ -438,6 +448,12 @@ impl MocapManagerInner {
         Ok(proto)
     }
 
+    async fn file_dialogs(&self) -> Result<Arc<dyn FileDialogs>> {
+        lock!(state <= self.shared.state.lock().await?, {
+            state.file_dialogs.clone()
+        }).ok_or_else(|| err_msg("File dialogs are only available in the desktop app"))
+    }
+
     pub async fn execute(&self, req: &ExecuteRequest) -> Result<ExecuteResponse> {
 
         match req.command_case() {
@@ -456,6 +472,43 @@ impl MocapManagerInner {
                 });
             }
             
+            ExecuteRequestCommandCase::SaveCameraSettings(_) => {
+                let dialogs = self.file_dialogs().await?;
+
+                let mut settings = MocapCameraConfigureRequest::default();
+                lock!(camera_config_state <= self.shared.camera_config_state.lock().await?, {
+                    copy_camera_settings(&mut settings, &camera_config_state.camera_config);
+                });
+
+                let path = run_dialog(move || {
+                    dialogs.save_file("Save Camera Settings", "mocap_camera_settings.txtpb")
+                }).await?;
+
+                if let Some(path) = path {
+                    file::write(&path, protobuf::text::serialize_text_proto(&settings).as_bytes()).await?;
+                }
+            }
+
+            ExecuteRequestCommandCase::LoadCameraSettings(_) => {
+                let dialogs = self.file_dialogs().await?;
+
+                let path = run_dialog(move || {
+                    dialogs.open_file("Load Camera Settings")
+                }).await?;
+
+                if let Some(path) = path {
+                    let mut settings = MocapCameraConfigureRequest::default();
+                    protobuf::text::parse_text_proto(&file::read_to_string(&path).await?, &mut settings)?;
+
+                    lock!(camera_config_state <= self.shared.camera_config_state.lock().await?, {
+                        copy_camera_settings(&mut camera_config_state.camera_config, &settings);
+                        camera_config_state.single_camera_override = None;
+                        camera_config_state.camera_config_epoch += 1;
+                        camera_config_state.notify_all();
+                    });
+                }
+            }
+
             ExecuteRequestCommandCase::SelectCamera(camera_id) => {
                 lock!(camera_config_state <= self.shared.camera_config_state.lock().await?, {
                     camera_config_state.active_camera_id = Some(*camera_id);

@@ -259,16 +259,9 @@ export class CheckerboardPage extends React.Component<CheckerboardPageProps, Che
             }
         });
 
-        let flip_x = false;
-        let flip_y = false;
+        let rotation = 0;
         if (camera.camera_status) {
-            let o = camera_orientation(camera.camera_status);
-
-            if (o.upside_down) {
-                flip_y = true;
-            } else {
-                flip_x = true;
-            }
+            rotation = camera_orientation(camera.camera_status, camera.id).rotation;
         }
 
         let num_frames = (mode.frames || []).length;
@@ -290,7 +283,7 @@ export class CheckerboardPage extends React.Component<CheckerboardPageProps, Che
         }
 
         return (
-            <FrameViewer image_source={image_source} points={points} flipX={flip_x} flipY={flip_y} channel={this.props.context.channel} />
+            <FrameViewer image_source={image_source} points={points} rotation={rotation} channel={this.props.context.channel} />
         );
     }
 
