@@ -14,6 +14,7 @@ use cluster_client::id::entity_id_from_string;
 use executor::sync::{SyncMutex, AsyncMutex};
 use executor::{lock, lock_async};
 use protobuf_json::*;
+use protobuf::StaticMessage;
 use math::matrix::{vec3d, vec3f, Matrix4f, Vector3f, Vector3d};
 use mocap_camera_core::*;
 use image::Image;
@@ -26,6 +27,56 @@ use crate::renderer::*;
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 30);
 
 const MIN_JPEG_INTERVAL: Duration = Duration::from_millis(1000 / 5);
+
+/// See SimulationAnimationConfig.sequence_path.
+pub const SEQUENCE_TIMESTAMP_BLOCK: u64 = 100000;
+
+/// Loaded SimulationSequenceProto.
+struct Sequence {
+    path: String,
+    fps: f64,
+    marker_radius: f32,
+    faces: Arc<Vec<[u32; 3]>>,
+    /// (occluder vertices, marker centers) per frame.
+    frames: Vec<(Vec<Vector3f>, Vec<Vector3f>)>,
+}
+
+impl Sequence {
+    fn load(path: &str) -> Result<Self> {
+        let proto = SimulationSequenceProto::parse(&std::fs::read(path)?)?;
+
+        let floats = |b: &[u8]| -> Vec<Vector3f> {
+            let v: Vec<f32> = b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            v.chunks_exact(3).map(|p| vec3f(p[0], p[1], p[2])).collect()
+        };
+
+        let idx: Vec<u32> = proto.faces().chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let faces = idx.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect();
+
+        let frames: Vec<_> = proto.frames().iter().map(|f| (floats(f.vertices()), floats(f.markers()))).collect();
+        if frames.is_empty() || proto.fps() <= 0.0 {
+            return Err(err_msg("Empty sequence"));
+        }
+
+        Ok(Self {
+            path: path.to_string(),
+            fps: proto.fps() as f64,
+            marker_radius: proto.marker_radius(),
+            faces: Arc::new(faces),
+            frames,
+        })
+    }
+
+    fn scene(&self, i: usize) -> MocapCameraRendererScene {
+        let (vertices, markers) = &self.frames[i];
+        let mut scene = MocapCameraRendererScene::default();
+        for m in markers {
+            scene.spheres.push(Sphere { center: m.clone(), radius: self.marker_radius });
+        }
+        scene.occluder = Some(Occluder { faces: self.faces.clone(), vertices: vertices.clone() });
+        scene
+    }
+}
 
 
 pub struct MocapSimulator {
@@ -153,6 +204,10 @@ impl MocapSimulator {
         let mut last_jpeg = Instant::now();
 
         let mut frame_i = 0;
+        let mut sequence: Option<Sequence> = None;
+        // Timestamps sent to the manager must always increase.
+        let mut last_time = Duration::ZERO;
+        let mut seq_base: u64 = 0;
         loop {
 
 
@@ -168,9 +223,33 @@ impl MocapSimulator {
                 c
             })?;
 
-            let frame_time = Duration::from_secs_f64((frame_i as f64) * (1.0 / 30.0));
+            let mut frame_time = Duration::from_secs_f64((frame_i as f64) * (1.0 / 30.0));
 
-            let scene = Self::generate_scene(&shared, &animation_config);
+            let scene = if !animation_config.sequence_path().is_empty() {
+                let path = animation_config.sequence_path();
+                if sequence.as_ref().map(|s| s.path != path).unwrap_or(true) {
+                    sequence = Some(Sequence::load(path)?);
+                }
+                let seq = sequence.as_ref().unwrap();
+
+                let i = (animation_config.current_frame() % (seq.frames.len() as u64)) as usize;
+                // Move to the next timestamp block whenever the sequence restarts or seeks back.
+                let time_of = |base: u64| Duration::from_secs_f64((base + i as u64) as f64 / seq.fps);
+                if time_of(seq_base) <= last_time {
+                    let block = SEQUENCE_TIMESTAMP_BLOCK;
+                    let last_frames = (last_time.as_secs_f64() * seq.fps).ceil() as u64;
+                    seq_base = (last_frames / block + 1) * block;
+                }
+                frame_time = time_of(seq_base);
+
+                seq.scene(i)
+            } else {
+                if frame_time <= last_time {
+                    frame_time = last_time + MIN_FRAME_INTERVAL;
+                }
+                Self::generate_scene(&shared, &animation_config)
+            };
+            last_time = frame_time;
 
             let mut request = RenderRequest {
                 scene,
@@ -227,7 +306,7 @@ impl MocapSimulator {
             // }
 
 
-            if e - s < MIN_FRAME_INTERVAL {
+            if !animation_config.unthrottled() && e - s < MIN_FRAME_INTERVAL {
                 std::thread::sleep(MIN_FRAME_INTERVAL - (e - s));
             }
 
@@ -529,7 +608,7 @@ struct SimulatedMocapCamera {
 }
 
 #[async_trait]
-impl MocapCameraService for SimulatedMocapCamera {
+impl CameraService for SimulatedMocapCamera {
 
     async fn Status(
         &self,

@@ -15,5 +15,33 @@ message SimulationAnimationConfig {
         bool wanding_calibration = 5;
 
         bool spinning_wand = 6;
+
+        // Path to a SimulationSequenceProto file (see simulation/body/generate.py).
+        // Frame = current_frame % num_frames. The frame timestamp encodes the frame:
+        // (timestamp * fps) % SEQUENCE_TIMESTAMP_BLOCK == frame index.
+        string sequence_path = 7;
     }
+
+    // If true, render frames as fast as possible instead of at most 30 fps.
+    bool unthrottled = 8;
+}
+// Pre-computed animation played by the 'sequence_path' scene.
+// World frame, meters, Z up. All float/uint32 arrays are little endian.
+message SimulationSequenceProto {
+    float fps = 1;
+
+    float marker_radius = 2;
+
+    // Occluder triangles: uint32 x 3 per face. Same topology every frame.
+    bytes faces = 3;
+
+    repeated SimulationSequenceFrame frames = 4;
+}
+
+message SimulationSequenceFrame {
+    // Occluder vertices: float32 x 3 per vertex.
+    bytes vertices = 1;
+
+    // Marker centers: float32 x 3 per marker.
+    bytes markers = 2;
 }

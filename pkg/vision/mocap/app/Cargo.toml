@@ -28,6 +28,9 @@ mocap_proto = { path = "../proto" }
 mocap_manager = { path = "../manager" }
 crypto = { path = "../../../crypto" }
 
+[features]
+simulation = ["mocap_manager/simulation"]
+
 [build-dependencies]
 common = { path = "../../../common" }
 file = { path = "../../../file" }

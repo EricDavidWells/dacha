@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Instant, Duration};
 
 use common::errors::*;
@@ -33,6 +34,9 @@ use crate::shaders::*;
 //   in parallel to the other ones rendering. 
 const NUM_PROJECTED_BUFFERS: usize = 3;
 
+/// Gray level of occluder meshes (must stay below the blob pixel threshold).
+const OCCLUDER_GRAY: f32 = 0.15;
+
 
 #[derive(Clone)]
 pub struct MocapFrameRendererOptions {
@@ -63,6 +67,16 @@ pub struct MocapCameraRendererScene {
     pub checkerboard: Option<Matrix4f>,
 
     pub cube: bool,
+
+    /// Non-reflective triangle mesh (e.g. a body) in world coordinates that hides markers.
+    pub occluder: Option<Occluder>,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Occluder {
+    /// Topology. A new Arc (not ptr_eq to the last one) rebuilds the GPU mesh.
+    pub faces: Arc<Vec<[u32; 3]>>,
+    pub vertices: Vec<Vector3f>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -79,6 +93,10 @@ pub struct MocapFrameRenderer {
     sphere: Mesh,
 
     cube: Mesh, 
+
+    matte_shader: Rc<Shader>,
+
+    occluder: Option<(Arc<Vec<[u32; 3]>>, Mesh)>,
 
     checkerboard: Group,
 
@@ -176,6 +194,8 @@ impl MocapFrameRenderer {
             cameras: vec![],
             sphere,
             cube,
+            matte_shader,
+            occluder: None,
             checkerboard,
             projected_buffers,
             projected_size,
@@ -265,6 +285,21 @@ impl MocapFrameRenderer {
     pub fn render(&mut self, scene: &MocapCameraRendererScene) -> Result<Vec<(u64, image::Image<u8>)>> {
         let mut all_frames = vec![];
 
+        if let Some(occ) = &scene.occluder {
+            match &mut self.occluder {
+                Some((faces, mesh)) if Arc::ptr_eq(faces, &occ.faces) => {
+                    mesh.set_vertex_positions(&occ.vertices[..]);
+                }
+                _ => {
+                    let mut mesh = Mesh::from(
+                        self.window.context(), &occ.vertices, &occ.faces, &[], self.matte_shader.clone());
+                    mesh.set_vertex_texture_coordinates(vec2f(0., 0.))
+                        .set_vertex_colors(vec3f(OCCLUDER_GRAY, OCCLUDER_GRAY, OCCLUDER_GRAY));
+                    self.occluder = Some((occ.faces.clone(), mesh));
+                }
+            }
+        }
+
         // Camera indexes that haven't started being rendered yet. 
         let mut pending_queue = vec![];
         for camera_i in 0..self.cameras.len() {
@@ -339,6 +374,10 @@ impl MocapFrameRenderer {
             
             if scene.cube {
                 self.cube.draw(&camera.projected_camera, &base_model_view);
+            }
+
+            if let (Some(_), Some((_, mesh))) = (&scene.occluder, &self.occluder) {
+                mesh.draw(&camera.projected_camera, &base_model_view);
             }
 
 

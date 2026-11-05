@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
     
     // TODO: Only do if running in UI mode.
     if let Err(e) = &res {
+        eprintln!("Mocap Internal Error: {}", e);
         webview::show_error_dialog("Mocap Internal Error", &e.to_string());
     }
 

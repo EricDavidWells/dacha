@@ -23,6 +23,9 @@ use crate::http_server::*;
 pub struct MocapAppArgs {
     data_dir: Option<LocalPathBuf>,
 
+    /// Manager config text proto to use instead of the built-in one (e.g. for simulation).
+    config: Option<LocalPathBuf>,
+
     #[arg(default = false)]
     enable_devtools: bool, 
 }
@@ -50,12 +53,28 @@ impl MocapApp {
 
         file::create_dir_all(&data_dir).await?;
 
-        let config = read_base_config(&data_dir).await?;
+        let config = match &args.config {
+            Some(path) => {
+                let mut config = MocapManagerConfig::default();
+                protobuf::text::parse_text_proto(&file::read_to_string(path).await?, &mut config)?;
+                config
+            }
+            None => read_base_config(&data_dir).await?
+        };
+        let aux_autostart = config.aux_rpc_server().autostart();
 
         let manager = Arc::new(MocapManager::create(
             config,
             data_dir.clone(),
         ).await?);
+
+        if aux_autostart {
+            let mut req = ExecuteRequest::default();
+            req.set_start_aux_rpc_server(true);
+            if let Err(e) = manager.execute(&req).await {
+                eprintln!("Failed to autostart aux RPC server: {}", e);
+            }
+        }
 
         let side_channel = Arc::new(DataSideChannel::create());
         manager.set_side_channel(side_channel.clone()).await?;
